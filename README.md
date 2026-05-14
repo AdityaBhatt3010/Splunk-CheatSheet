@@ -1,4 +1,4 @@
-# Splunk SPL Cheat Sheet (Practical SOC / Threat Hunting Edition) 🗿
+# Splunk SPL Cheat Sheet (Practical SOC / Threat Hunting Edition) 👨‍💻👩‍💻
 
 ---
 
@@ -867,6 +867,271 @@ Meaning:
 * keep noisy users
 * sort descending
 * clean report
+
+---
+
+# Bonus: Mini SOC Case Study — Hunting Insider Threat + Rare Logins + Suspicious Processes 🕵️‍♂️
+
+In real SOC environments, commands don’t exist in isolation.
+
+You chain them.
+
+Here’s a small practical investigation using multiple SPL concepts together. Based on the same detections we discussed. 
+
+---
+
+## Scenario
+
+A SOC analyst receives an alert:
+
+> “Unusual login behavior detected for multiple users.”
+
+Goal:
+
+Determine whether this is:
+
+* compromised credentials
+* insider misuse
+* suspicious remote access
+* malicious process execution
+
+---
+
+## Step 1 — Detect Unusual Login Hours
+
+Query:
+
+```spl
+index=vpnlogs
+| eval hour=tonumber(strftime(_time,"%H")) + tonumber(strftime(_time,"%M"))/60
+| eventstats avg(hour) as typical_hour stdev(hour) as stdev_hour by user
+| eval zscore=abs(hour-typical_hour)/stdev_hour
+| where zscore > 3
+| eval hour=round(hour,2), typical_hour=round(typical_hour,2)
+| eval stdev_hour=round(stdev_hour,2), zscore=round(zscore,2)
+| table _time user src_ip src_country hour typical_hour stdev_hour zscore
+| sort - zscore
+```
+
+Screenshot:
+
+![Weird Login Hours](S/bonus1.png)
+
+(Use your first uploaded screenshot path accordingly)
+
+### Investigation
+
+This query calculates:
+
+* user’s normal login time
+* deviation from baseline
+* anomaly score (z-score)
+
+Findings:
+
+* `njackson` logged in at **3.28 AM**
+* usual behavior: **13.50 (1:30 PM)**
+* z-score: **5.49**
+
+Meaning:
+
+This is statistically abnormal.
+
+That’s not “just late working.”
+
+That’s a major deviation.
+
+Similarly:
+
+* `jsmith`
+* z-score: **3.01**
+
+Also suspicious.
+
+---
+
+## Step 2 — Rare Country Login Detection
+
+Next question:
+
+> Is the user logging in from a strange geography?
+
+Query:
+
+```spl
+index=vpnlogs
+| eventstats count as logins_by_user by user
+| eventstats count as logins_by_user_country by user src_country
+| eval country_freq=logins_by_user_country/logins_by_user
+| where country_freq < 0.1
+| table _time user src_ip src_country country_freq
+```
+
+Screenshot:
+
+![Rare Country Login](S/bonus2.png)
+
+### Investigation
+
+Logic:
+
+If:
+
+* user usually logs in from US
+* suddenly appears from AU or JP
+* and that country represents less than 10% of history
+
+Flag it.
+
+Findings:
+
+* `kbrown` from **AU**
+* frequency: **0.005**
+
+Meaning:
+
+0.5% of historical behavior.
+
+That’s highly anomalous.
+
+Another:
+
+* `jsmith` from **JP**
+* also **0.005**
+
+Potential indicators:
+
+* VPN abuse
+* credential theft
+* remote attacker access
+* impossible travel scenario
+
+---
+
+## Step 3 — Suspicious Process Execution Risk Hunt
+
+Now pivot into endpoint telemetry.
+
+Query:
+
+```spl
+index=windowslogs
+| lookup image_riskscore Image OUTPUT RiskScore
+| stats count by Image RiskScore
+| sort - RiskScore
+```
+
+Screenshot:
+
+![Process Risk Hunt](S/bonus3.png)
+
+### Investigation
+
+This enriches process execution data using a lookup table.
+
+Meaning:
+
+Known binaries are assigned threat weights.
+
+Example findings:
+
+| Process        | Risk |
+| -------------- | ---- |
+| powershell.exe | 10   |
+| lsass.exe      | 9    |
+| WMIC.exe       | 7    |
+| net.exe        | 6    |
+
+Interpretation:
+
+#### PowerShell
+
+Risk score 10 because attackers love it for:
+
+* fileless malware
+* encoded payloads
+* download cradles
+* privilege escalation
+
+Example:
+
+```powershell
+powershell -enc <base64>
+```
+
+---
+
+#### LSASS
+
+Critical because credential dumping targets it.
+
+Tools:
+
+* Mimikatz
+* ProcDump abuse
+
+---
+
+#### WMIC
+
+Classic LOLBin.
+
+Used for:
+
+* remote execution
+* recon
+* persistence
+
+---
+
+#### net.exe
+
+Common for:
+
+```cmd
+net user
+net localgroup administrators
+```
+
+Privilege enumeration.
+
+---
+
+## Final Correlation
+
+Now combine findings:
+
+Observed:
+
+✅ abnormal login hour <br/>
+✅ rare login geography <br/>
+✅ suspicious process execution <br/>
+
+This dramatically increases confidence.
+
+Instead of isolated weak signals:
+
+you now have a correlated intrusion story.
+
+Possible hypothesis:
+
+> Attacker stole credentials, logged in remotely at unusual hours, then executed native Windows tooling for recon/post-exploitation.
+
+---
+
+## Analyst Takeaway
+
+Good SOC hunting isn’t:
+
+“Run one query.”
+
+It’s:
+
+```text
+Detect → Enrich → Correlate → Investigate
+```
+
+That’s the real analyst workflow.
 
 ---
 
